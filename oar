@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+
+# Import system modules
+import os,sys
+import struct 
+from subprocess import Popen
+from struct import pack,unpack
+from ctypes import *
+
+os.environ['OMP_TOOL_LIBRARIES'] = 'lib/liboar.so'
+
+test_nthreads=[4,8,16]
+
+class perfdata(Structure):
+	_fields_ = [ ('id', c_int),
+                     ('workers', c_int),
+		     ('codeptr', c_void_p),
+		     ('begin',c_long),
+		     ('end',c_long)]
+
+for nthreads in test_nthreads:
+  p=Popen("bin/hello")
+  fifo = "./pipe"
+  os.mkfifo(fifo,0o666)
+  fd=os.open(fifo,os.O_WRONLY)
+  os.write(fd,pack('i',nthreads))
+  os.close(fd)
+  fd=os.open(fifo,os.O_RDONLY)
+  rid=int.from_bytes(os.read(fd,4),byteorder="little")  
+  perfdata_parallel = []
+  for idx in range(rid):
+    perfdata_binary=os.read(fd,sizeof(perfdata))
+    id, workers, codeptr, begin, end = struct.unpack('iiPll',perfdata_binary)
+    perfdata_parallel.append(perfdata(id,workers,codeptr,begin,end))
+    command="addr2line -e bin/hello "+ hex(codeptr)
+    print(command)
+    os.system(command)
+  print(perfdata_parallel[1].workers)
+  os.close(fd)
+  p.communicate()
+  os.remove(fifo)
