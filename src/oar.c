@@ -55,16 +55,15 @@ on_ompt_callback_parallel_begin(
   perfdata_parallel[rid].workers=requested_parallelism;
   perfdata_parallel[rid].codeptr=(void*)((int64_t)codeptr_ra-1);
   gettimeofday(&timecheck,NULL);
-  perfdata_parallel[rid].begin=(long)timecheck.tv_sec * 1000 + (long)timecheck.tv_usec / 1000;
-  printf("Number of threads requested: %d\n",requested_parallelism);
+  perfdata_parallel[rid].begin=(long)timecheck.tv_sec * 1000000 + (long)timecheck.tv_usec;
   omp_set_num_threads(requested_parallelism);  
-  if(task_data->value==0) {
-    task_data->value=(int)ompt_get_unique_id();
-    printf("parallel data: %d\n",(int)task_data->value); 
-  }
-  else  
-  printf("id: %d\n",(int)ompt_get_unique_id());
-  printf("addr %p\n",(void*)((int64_t)codeptr_ra-1));
+  //if(task_data->value==0) {
+  //  task_data->value=(int)ompt_get_unique_id();
+  //  printf("parallel data: %d\n",(int)task_data->value); 
+  //}
+  //else  
+  //printf("id: %d\n",(int)ompt_get_unique_id());
+  //printf("addr %p\n",(void*)((int64_t)codeptr_ra-1));
   
 //  printf("%" PRIu64 ": ompt_event_parallel_begin: parent_task_id=%" PRIu64 ", parent_task_frame=%p, parallel_id=%" PRIu64 ", requested_team_size=%" PRIu32 ", parallel_function=%p, invoker=%d\n", ompt_get_thread_id(), parent_task_id, parent_task_frame, parallel_id, requested_team_size, parallel_function, invoker);
 }
@@ -78,7 +77,7 @@ on_ompt_callback_parallel_end(
 {
   struct timeval timecheck;
   gettimeofday(&timecheck,NULL);
-  perfdata_parallel[rid].end=(long)timecheck.tv_sec * 1000 + (long)timecheck.tv_usec / 1000;
+  perfdata_parallel[rid].end=(long)timecheck.tv_sec * 1000000 + (long)timecheck.tv_usec;
   rid++;
 }
 
@@ -93,7 +92,7 @@ int ompt_initialize(
   //printf("%f\n",*(double*)(data->ptr));
   //printf("[INIT-tool] libomp init time: %f\n", omp_get_wtime()-*(double*)(data->ptr));
   //*(double*)(data->ptr)=omp_get_wtime();
-  printf("OMP initialised %d\n",*(int*)(data->ptr)); 
+  //printf("OMP initialised %d\n",*(int*)(data->ptr)); 
   //ompt_set_callback(ompt_callback_parallel_begin, (ompt_callback_t) &on_ompt_event_parallel_begin);
   register_callback(ompt_callback_parallel_begin);
   register_callback(ompt_callback_parallel_end);
@@ -115,18 +114,6 @@ void ompt_finalize(ompt_data_t* data)
   fd=open(fifo,0666);  
   write(fd,&rid,sizeof(int));
   write(fd,perfdata_parallel,sizeof(struct perfdata)*rid);
-  i=0;
-  while(perfdata_parallel[i].id!=-1) {
-    int id;
-    long begin,end;
-    double time;
-    id=perfdata_parallel[i].id;
-    begin=perfdata_parallel[i].begin;
-    end=perfdata_parallel[i].end;
-    time=(end-begin)/1000.0;
-    printf("Parallel region %d time: %f\n",id,time);
-    i++;
-  }
   close(fd);
 }
 

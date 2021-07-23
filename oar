@@ -3,13 +3,15 @@
 # Import system modules
 import os,sys
 import struct 
-from subprocess import Popen
+from subprocess import Popen,check_output
 from struct import pack,unpack
 from ctypes import *
+import json
+import operator
 
 os.environ['OMP_TOOL_LIBRARIES'] = 'lib/liboar.so'
-
-test_nthreads=[4,8,16]
+test_nthreads=[4,8,16,32,64,128]
+program_name="bin/hello"
 
 class perfdata(Structure):
 	_fields_ = [ ('id', c_int),
@@ -18,24 +20,41 @@ class perfdata(Structure):
 		     ('begin',c_long),
 		     ('end',c_long)]
 
-for nthreads in test_nthreads:
-  p=Popen("bin/hello")
-  fifo = "./pipe"
-  os.mkfifo(fifo,0o666)
-  fd=os.open(fifo,os.O_WRONLY)
-  os.write(fd,pack('i',nthreads))
-  os.close(fd)
-  fd=os.open(fifo,os.O_RDONLY)
-  rid=int.from_bytes(os.read(fd,4),byteorder="little")  
+def print_json(perfdata_parallel,rid,aggregate):
+  idx=0
+  fp=open('hello.json','w')
+  if aggregate == False:
+    for region in range(rid):
+      timing = {}
+      id = perfdata_parallel[idx].id
+      source = str(check_output("addr2line -e " + program_name + " " + hex(perfdata_parallel[idx].codeptr), shell=True),'utf-8').rstrip("\n")
+      for workers in range(len(test_nthreads)):
+        timing[perfdata_parallel[idx].workers]=(perfdata_parallel[idx].end-perfdata_parallel[idx].begin)/1000.0
+        idx=idx+1
+      json_dump = {"id":id, "source":source, "performance":[{'workers':key,'time':value} for key,value in timing.items()]}
+      json.dump(json_dump, fp, indent=2, separators=(',', ': '))
+
+
+def main():
   perfdata_parallel = []
-  for idx in range(rid):
-    perfdata_binary=os.read(fd,sizeof(perfdata))
-    id, workers, codeptr, begin, end = struct.unpack('iiPll',perfdata_binary)
-    perfdata_parallel.append(perfdata(id,workers,codeptr,begin,end))
-    command="addr2line -e bin/hello "+ hex(codeptr)
-    print(command)
-    os.system(command)
-  print(perfdata_parallel[1].workers)
-  os.close(fd)
-  p.communicate()
-  os.remove(fifo)
+  for nthreads in test_nthreads:
+    p=Popen(program_name)
+    fifo = "./pipe"
+    os.mkfifo(fifo,0o666)
+    fd=os.open(fifo,os.O_WRONLY)
+    os.write(fd,pack('i',nthreads))
+    os.close(fd)
+    fd=os.open(fifo,os.O_RDONLY)
+    rid=int.from_bytes(os.read(fd,4),byteorder="little")  
+    for idx in range(rid):
+      perfdata_binary=os.read(fd,sizeof(perfdata))
+      id, workers, codeptr, begin, end = struct.unpack('iiPll',perfdata_binary)
+      perfdata_parallel.append(perfdata(id,workers,codeptr,begin,end))
+    os.close(fd)
+    p.communicate()
+    os.remove(fifo)
+  perfdata_parallel.sort(key=operator.attrgetter('id'))
+  print_json(perfdata_parallel,rid,False)
+
+if __name__ == "__main__":
+    main()
