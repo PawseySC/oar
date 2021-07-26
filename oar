@@ -13,6 +13,12 @@ os.environ['OMP_TOOL_LIBRARIES'] = 'lib/liboar.so'
 test_nthreads=[4,8,16,32,64,128]
 program_name="bin/hello"
 
+class readabledata(Structure):
+        _fields_ = [ ('id', c_int),
+                     ('workers', c_int),
+                     ('source', c_wchar_p),
+                     ('time', c_float)] 
+
 class perfdata(Structure):
 	_fields_ = [ ('id', c_int),
                      ('workers', c_int),
@@ -20,23 +26,52 @@ class perfdata(Structure):
 		     ('begin',c_long),
 		     ('end',c_long)]
 
-def print_json(perfdata_parallel,rid,aggregate):
+def perf2readable(perfdata_parallel,readabledata_parallel,aggregate):
+
+  if aggregate == False: # each parallel call is treated as unique even if it relates to the same loop
+    for idx in range(len(perfdata_parallel)):
+      id = perfdata_parallel[idx].id
+      workers = perfdata_parallel[idx].workers
+      source = str(check_output("addr2line -e " + program_name + " " + hex(perfdata_parallel[idx].codeptr), shell=True),'utf-8').rstrip("\n")
+      time = (perfdata_parallel[idx].end-perfdata_parallel[idx].begin)/1000000.0 # converting to seconds
+      readabledata_parallel.append(readabledata(id,workers,source,time))
+  else: # performance of the same loop will be averaged over all executions in the code
+    count = len(perfdata_parallel)*[0]
+    for idx in range(len(perfdata_parallel)):
+      id = perfdata_parallel[idx].id
+      workers = perfdata_parallel[idx].workers
+      source = str(check_output("addr2line -e " + program_name + " " + hex(perfdata_parallel[idx].codeptr), shell=True),'utf-8').rstrip("\n")
+      time = (perfdata_parallel[idx].end-perfdata_parallel[idx].begin)/1000000.0 # converting to seconds
+      new_instance = True
+      for idx2 in range(len(readabledata_parallel)):
+        if (source == readabledata_parallel[idx2].source and workers == readabledata_parallel[idx2].workers) :
+          new_instance = False
+          count[idx2]=count[idx2]+1
+          readabledata_parallel[idx2].time = readabledata_parallel[idx2].time + time
+      if new_instance == True:
+        count[idx]=1
+        readabledata_parallel.append(readabledata(id,workers,source,time))
+    for idx2 in range(len(readabledata_parallel)):
+      readabledata_parallel[idx2].time = readabledata_parallel[idx2].time / count[idx2]       
+
+def print_json(readabledata_parallel):
   idx=0
   fp=open('hello.json','w')
-  if aggregate == False:
-    for region in range(rid):
-      timing = {}
-      id = perfdata_parallel[idx].id
-      source = str(check_output("addr2line -e " + program_name + " " + hex(perfdata_parallel[idx].codeptr), shell=True),'utf-8').rstrip("\n")
-      for workers in range(len(test_nthreads)):
-        timing[perfdata_parallel[idx].workers]=(perfdata_parallel[idx].end-perfdata_parallel[idx].begin)/1000.0
-        idx=idx+1
-      json_dump = {"id":id, "source":source, "performance":[{'workers':key,'time':value} for key,value in timing.items()]}
-      json.dump(json_dump, fp, indent=2, separators=(',', ': '))
+  rid = int(len(readabledata_parallel)/len(test_nthreads))
+  for region in range(int(rid)):
+    timing = {}
+    id = readabledata_parallel[idx].id
+    source = readabledata_parallel[idx].source
+    for workers in range(len(test_nthreads)):
+      timing[readabledata_parallel[idx].workers]=readabledata_parallel[idx].time
+      idx=idx+1
+    json_dump = {"id":id, "source":source, "performance":[{'workers':key,'time':value} for key,value in timing.items()]}
+    json.dump(json_dump, fp, indent=2, separators=(',', ': '))
 
 
 def main():
   perfdata_parallel = []
+  readabledata_parallel = []
   for nthreads in test_nthreads:
     p=Popen(program_name)
     fifo = "./pipe"
@@ -54,7 +89,8 @@ def main():
     p.communicate()
     os.remove(fifo)
   perfdata_parallel.sort(key=operator.attrgetter('id'))
-  print_json(perfdata_parallel,rid,False)
+  perf2readable(perfdata_parallel,readabledata_parallel,False)
+  print_json(readabledata_parallel)
 
 if __name__ == "__main__":
     main()
