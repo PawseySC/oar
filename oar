@@ -8,6 +8,7 @@ from struct import pack,unpack
 from ctypes import *
 import json
 import operator
+import argparse
 
 os.environ['OMP_TOOL_LIBRARIES'] = 'lib/liboar.so'
 test_nthreads=[4,8,16,32,64,128]
@@ -26,9 +27,17 @@ class perfdata(Structure):
 		     ('begin',c_long),
 		     ('end',c_long)]
 
-def perf2readable(perfdata_parallel,readabledata_parallel,aggregate):
+def parse_arguments():
+  parser = argparse.ArgumentParser(description='OAR: OpenMP Adaptive Runtime')
+  parser.add_argument('mode',choices=['collect','run'],help='choose between collect and run modes')
+  parser.add_argument('--aggregate',default=False,action='store_true',help='aggregate performance of multiple invocation of the same OpenMP region')
+  parser.add_argument('--nworkers_range',metavar='nworkers_range',type=str)
+  parser.add_argument('--nworkers_list',metavar='nworkers_list',type=str)
+  args = parser.parse_args()
+  return args
 
-  if aggregate == False: # each parallel call is treated as unique even if it relates to the same loop
+def perf2readable(perfdata_parallel,readabledata_parallel,aggregate):
+  if not aggregate: # each parallel call is treated as unique even if it relates to the same loop
     for idx in range(len(perfdata_parallel)):
       id = perfdata_parallel[idx].id
       workers = perfdata_parallel[idx].workers
@@ -68,11 +77,28 @@ def print_json(readabledata_parallel):
     json_dump = {"id":id, "source":source, "performance":[{'workers':key,'time':value} for key,value in timing.items()]}
     json.dump(json_dump, fp, indent=2, separators=(',', ': '))
 
+def create_nworkers_list(args):
+  nworkers_list = []
+  if args.nworkers_range: # range provided
+    arg_list = args.nworkers_range.split(":")
+    arg_list = [int(x) for x in arg_list]
+    n = arg_list[0]
+    while n <= arg_list[1]:
+      nworkers_list.append(n)
+      n = n * arg_list[2]
+  elif args.nworkers_list: # list provided 
+    arg_list = args.nworkers_list.split(",")
+    arg_list = [int(x) for x in arg_list]
+    nworkers_list = arg_list
+  else: # default is read OMP_NUM_THREADS and decrease
+    nworkers_list=[4,8,16,32,64,128]
+  return nworkers_list
 
-def main():
+def collect(args):
+  nworkers_list = create_nworkers_list(args)
   perfdata_parallel = []
   readabledata_parallel = []
-  for nthreads in test_nthreads:
+  for nthreads in nworkers_list:
     p=Popen(program_name)
     fifo = "./pipe"
     os.mkfifo(fifo,0o666)
@@ -80,7 +106,7 @@ def main():
     os.write(fd,pack('i',nthreads))
     os.close(fd)
     fd=os.open(fifo,os.O_RDONLY)
-    rid=int.from_bytes(os.read(fd,4),byteorder="little")  
+    rid=int.from_bytes(os.read(fd,4),byteorder="little")
     for idx in range(rid):
       perfdata_binary=os.read(fd,sizeof(perfdata))
       id, workers, codeptr, begin, end = struct.unpack('iiPll',perfdata_binary)
@@ -89,8 +115,13 @@ def main():
     p.communicate()
     os.remove(fifo)
   perfdata_parallel.sort(key=operator.attrgetter('id'))
-  perf2readable(perfdata_parallel,readabledata_parallel,False)
+  perf2readable(perfdata_parallel,readabledata_parallel,args.aggregate)
   print_json(readabledata_parallel)
+
+def main():
+  args=parse_arguments()
+  print(args.mode)
+  if args.mode == 'collect': collect(args)
 
 if __name__ == "__main__":
     main()
