@@ -11,7 +11,6 @@ import operator
 import argparse
 
 os.environ['OMP_TOOL_LIBRARIES'] = 'lib/liboar.so'
-test_nthreads=[4,8,16,32,64,128]
 program_name="bin/hello"
 
 class readabledata(Structure):
@@ -33,6 +32,7 @@ def parse_arguments():
   parser.add_argument('--aggregate',default=False,action='store_true',help='aggregate performance of multiple invocation of the same OpenMP region')
   parser.add_argument('--nworkers_range',metavar='nworkers_range',type=str)
   parser.add_argument('--nworkers_list',metavar='nworkers_list',type=str)
+  parser.add_argument('binary',type=str,help='path and name of the executable')
   args = parser.parse_args()
   return args
 
@@ -63,15 +63,15 @@ def perf2readable(perfdata_parallel,readabledata_parallel,aggregate):
     for idx2 in range(len(readabledata_parallel)):
       readabledata_parallel[idx2].time = readabledata_parallel[idx2].time / count[idx2]       
 
-def print_json(readabledata_parallel):
+def print_json(readabledata_parallel,nworkers):
   idx=0
   fp=open('hello.json','w')
-  rid = int(len(readabledata_parallel)/len(test_nthreads))
+  rid = int(len(readabledata_parallel)/nworkers)
   for region in range(int(rid)):
     timing = {}
     id = readabledata_parallel[idx].id
     source = readabledata_parallel[idx].source
-    for workers in range(len(test_nthreads)):
+    for workers in range(nworkers):
       timing[readabledata_parallel[idx].workers]=readabledata_parallel[idx].time
       idx=idx+1
     json_dump = {"id":id, "source":source, "performance":[{'workers':key,'time':value} for key,value in timing.items()]}
@@ -90,8 +90,8 @@ def create_nworkers_list(args):
     arg_list = args.nworkers_list.split(",")
     arg_list = [int(x) for x in arg_list]
     nworkers_list = arg_list
-  else: # default is read OMP_NUM_THREADS and decrease
-    nworkers_list=[4,8,16,32,64,128]
+  else: # default; in future this should read OMP_NUM_THREADS and decrease
+    nworkers_list=[1,2,4,8,16,32,64,128]
   return nworkers_list
 
 def collect(args):
@@ -116,7 +116,7 @@ def collect(args):
     os.remove(fifo)
   perfdata_parallel.sort(key=operator.attrgetter('id'))
   perf2readable(perfdata_parallel,readabledata_parallel,args.aggregate)
-  print_json(readabledata_parallel)
+  print_json(readabledata_parallel,len(nworkers_list))
 
 def main():
   args=parse_arguments()
