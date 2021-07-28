@@ -8,7 +8,7 @@
 void second(double *res,unsigned int *seed)
 {
 
-  int i;
+  int i,j;
   
   #pragma omp parallel for
   for(i=0;i<MAX;i++)

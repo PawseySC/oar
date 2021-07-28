@@ -35,6 +35,8 @@ def parse_arguments():
   parser.add_argument('--nworkers_range',metavar='nworkers_range',type=str)
   parser.add_argument('--nworkers_list',metavar='nworkers_list',type=str)
   parser.add_argument('executable',type=str,help='path and name of the executable')
+  parser.add_argument('--recipe',dest='recipe_file',type=str)
+  parser.add_argument('--force',default=False,action='store_true')
   args = parser.parse_args()
   return args
 
@@ -151,11 +153,26 @@ def collect(args):
   write_recipe(readabledata_parallel,len(nworkers_list),args)
 
 def run(args):
-  print("Running")
+  if not args.recipe_file:
+    print("Please provide recipe file with --recipe filename option")
+  else:
+    print("Using recipe file: %s\n" %args.recipe_file)
+    # compute md5 sum of the executable
+    md5_hash = hashlib.md5()
+    executable = open(args.executable, "rb")
+    content = executable.read()
+    md5_hash.update(content)
+    md5sum = md5_hash.hexdigest()
+    executable.close()
+    # open recipe file
+    frecipe = open(args.recipe_file,"r")
+    md5sum_in_recipe=frecipe.read().splitlines()	 #readline() #read md5sum
+    if str(md5sum) != str(md5sum_in_recipe[0]) and not args.force: 
+      print("Code was updated since the write of the recipe file. Rerun the collection again or use --force")
 
 def main():
   args=parse_arguments()
-  print(args.mode)
+  print("Oar will "+args.mode+" the program.")
   if args.mode == 'collect': collect(args)
   if args.mode == 'run' : run(args)
 
