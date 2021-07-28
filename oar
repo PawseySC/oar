@@ -9,14 +9,16 @@ from ctypes import *
 import json
 import operator
 import argparse
+import hashlib
+import time
 
 os.environ['OMP_TOOL_LIBRARIES'] = 'lib/liboar.so'
-program_name="bin/hello"
 
 class readabledata(Structure):
         _fields_ = [ ('id', c_int),
                      ('workers', c_int),
                      ('source', c_wchar_p),
+                     ('codeptr', c_void_p),
                      ('time', c_float)] 
 
 class perfdata(Structure):
@@ -32,24 +34,26 @@ def parse_arguments():
   parser.add_argument('--aggregate',default=False,action='store_true',help='aggregate performance of multiple invocation of the same OpenMP region')
   parser.add_argument('--nworkers_range',metavar='nworkers_range',type=str)
   parser.add_argument('--nworkers_list',metavar='nworkers_list',type=str)
-  parser.add_argument('binary',type=str,help='path and name of the executable')
+  parser.add_argument('executable',type=str,help='path and name of the executable')
   args = parser.parse_args()
   return args
 
-def perf2readable(perfdata_parallel,readabledata_parallel,aggregate):
-  if not aggregate: # each parallel call is treated as unique even if it relates to the same loop
+def perf2readable(perfdata_parallel,readabledata_parallel,args):
+  if not args.aggregate: # each parallel call is treated as unique even if it relates to the same loop
     for idx in range(len(perfdata_parallel)):
       id = perfdata_parallel[idx].id
       workers = perfdata_parallel[idx].workers
-      source = str(check_output("addr2line -e " + program_name + " " + hex(perfdata_parallel[idx].codeptr), shell=True),'utf-8').rstrip("\n")
+      source = str(check_output("addr2line -e " + args.executable + " " + hex(perfdata_parallel[idx].codeptr), shell=True),'utf-8').rstrip("\n")
+      codeptr = perfdata_parallel[idx].codeptr
       time = (perfdata_parallel[idx].end-perfdata_parallel[idx].begin)/1000000.0 # converting to seconds
-      readabledata_parallel.append(readabledata(id,workers,source,time))
+      readabledata_parallel.append(readabledata(id,workers,source,codeptr,time))
   else: # performance of the same loop will be averaged over all executions in the code
     count = len(perfdata_parallel)*[0]
     for idx in range(len(perfdata_parallel)):
       id = perfdata_parallel[idx].id
       workers = perfdata_parallel[idx].workers
-      source = str(check_output("addr2line -e " + program_name + " " + hex(perfdata_parallel[idx].codeptr), shell=True),'utf-8').rstrip("\n")
+      source = str(check_output("addr2line -e " + args.executable + " " + hex(perfdata_parallel[idx].codeptr), shell=True),'utf-8').rstrip("\n")
+      codeptr = perfdata_parallel[idx].codeptr
       time = (perfdata_parallel[idx].end-perfdata_parallel[idx].begin)/1000000.0 # converting to seconds
       new_instance = True
       for idx2 in range(len(readabledata_parallel)):
@@ -59,13 +63,13 @@ def perf2readable(perfdata_parallel,readabledata_parallel,aggregate):
           readabledata_parallel[idx2].time = readabledata_parallel[idx2].time + time
       if new_instance == True:
         count[idx]=1
-        readabledata_parallel.append(readabledata(id,workers,source,time))
+        readabledata_parallel.append(readabledata(id,workers,source,codeptr,time))
     for idx2 in range(len(readabledata_parallel)):
       readabledata_parallel[idx2].time = readabledata_parallel[idx2].time / count[idx2]       
 
-def print_json(readabledata_parallel,nworkers):
+def write_json(readabledata_parallel,nworkers,executable):
   idx=0
-  fp=open('hello.json','w')
+  fp=open(os.path.basename(executable)+'.json','w')
   rid = int(len(readabledata_parallel)/nworkers)
   for region in range(int(rid)):
     timing = {}
@@ -76,6 +80,33 @@ def print_json(readabledata_parallel,nworkers):
       idx=idx+1
     json_dump = {"id":id, "source":source, "performance":[{'workers':key,'time':value} for key,value in timing.items()]}
     json.dump(json_dump, fp, indent=2, separators=(',', ': '))
+
+def write_recipe(readabledata_parallel,nworkers,args):
+  # compute md5 sum of the executable
+  md5_hash = hashlib.md5()
+  executable = open(args.executable, "rb")
+  content = executable.read()
+  md5_hash.update(content)
+  md5sum = md5_hash.hexdigest()
+  executable.close() 
+  # open recipe file
+  frecipe_name=os.path.basename(args.executable)
+  frecipe = open("."+frecipe_name+"."+time.strftime("%Y%m%d%H%M%S"),"w")
+  frecipe.write("%s\n" % md5sum) #write md5sum
+  idx=0
+  rid=int(len(readabledata_parallel)/nworkers)
+  for region in range(int(rid)):
+    mintime=sys.float_info.max
+    workers_recipe=1
+    for workers in range(nworkers):
+      if readabledata_parallel[idx].time < mintime: 
+        mintime=readabledata_parallel[idx].time
+        workers_recipe=readabledata_parallel[idx].workers
+        workers_idx=idx 
+      idx=idx+1
+    #print(readabledata_parallel[workers_idx].codeptr)
+    frecipe.write("%s %d\n" %(hex(readabledata_parallel[workers_idx].codeptr),workers_recipe))
+  frecipe.close()
 
 def create_nworkers_list(args):
   nworkers_list = []
@@ -99,7 +130,7 @@ def collect(args):
   perfdata_parallel = []
   readabledata_parallel = []
   for nthreads in nworkers_list:
-    p=Popen(program_name)
+    p=Popen(args.executable)
     fifo = "./pipe"
     os.mkfifo(fifo,0o666)
     fd=os.open(fifo,os.O_WRONLY)
@@ -115,13 +146,18 @@ def collect(args):
     p.communicate()
     os.remove(fifo)
   perfdata_parallel.sort(key=operator.attrgetter('id'))
-  perf2readable(perfdata_parallel,readabledata_parallel,args.aggregate)
-  print_json(readabledata_parallel,len(nworkers_list))
+  perf2readable(perfdata_parallel,readabledata_parallel,args)
+  write_json(readabledata_parallel,len(nworkers_list),args.executable)
+  write_recipe(readabledata_parallel,len(nworkers_list),args)
+
+def run(args):
+  print("Running")
 
 def main():
   args=parse_arguments()
   print(args.mode)
   if args.mode == 'collect': collect(args)
+  if args.mode == 'run' : run(args)
 
 if __name__ == "__main__":
     main()
