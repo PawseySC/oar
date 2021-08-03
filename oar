@@ -156,7 +156,7 @@ def run(args):
   if not args.recipe_file:
     print("Please provide recipe file with --recipe filename option")
   else:
-    print("Using recipe file: %s\n" %args.recipe_file)
+    print("Using recipe file: %s" %args.recipe_file)
     # compute md5 sum of the executable
     md5_hash = hashlib.md5()
     executable = open(args.executable, "rb")
@@ -168,7 +168,22 @@ def run(args):
     frecipe = open(args.recipe_file,"r")
     md5sum_in_recipe=frecipe.read().splitlines()	 #readline() #read md5sum
     if str(md5sum) != str(md5sum_in_recipe[0]) and not args.force: 
-      print("Code was updated since the write of the recipe file. Rerun the collection again or use --force")
+      print("Executable's checksum does not match. Rerun the collection or use --force")
+    else: 
+      # start the code 
+      mode = -1
+      p=Popen(args.executable)
+      fifo = "./pipe"
+      os.mkfifo(fifo,0o666)
+      fd=os.open(fifo,os.O_WRONLY)
+      os.write(fd,pack('i',mode))
+      fbname=bytes(args.recipe_file, 'utf-8')
+      fblen=len(fbname)
+      os.write(fd,pack('i',fblen))
+      os.write(fd,fbname)
+      os.close(fd)
+      p.communicate()
+      os.remove(fifo)
 
 def main():
   args=parse_arguments()
