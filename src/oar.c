@@ -60,6 +60,7 @@ static void on_ompt_callback_parallel_begin(
 {
   /* mode -1 is running */
   if(mode==-1) {
+    /* NOTE: this needs fixing for aggregate mode */
     if(recipe_parallel[region].codeptr==(void*)((int64_t)codeptr_ra-1)) 
       omp_set_num_threads(recipe_parallel[region].nworkers);
       region++;

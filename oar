@@ -14,6 +14,7 @@ import time
 
 os.environ['OMP_TOOL_LIBRARIES'] = 'lib/liboar.so'
 
+# readabledata - holds readable data processed by perf2readable 
 class readabledata(Structure):
         _fields_ = [ ('id', c_int),
                      ('workers', c_int),
@@ -21,6 +22,7 @@ class readabledata(Structure):
                      ('codeptr', c_void_p),
                      ('time', c_float)] 
 
+# perfdata - holds raw data about parallel regions including location and performance
 class perfdata(Structure):
 	_fields_ = [ ('id', c_int),
                      ('workers', c_int),
@@ -28,18 +30,20 @@ class perfdata(Structure):
 		     ('begin',c_long),
 		     ('end',c_long)]
 
+# this function setup, parses and reads arguments
 def parse_arguments():
-  parser = argparse.ArgumentParser(description='OAR: OpenMP Adaptive Runtime')
+  parser = argparse.ArgumentParser(description='oar: openmp adaptive runtime')
   parser.add_argument('mode',choices=['collect','run','scan'],help='choose between collect and run modes')
-  parser.add_argument('--aggregate',default=False,action='store_true',help='aggregate performance of multiple invocation of the same OpenMP region')
-  parser.add_argument('--nworkers_range',metavar='nworkers_range',type=str)
-  parser.add_argument('--nworkers_list',metavar='nworkers_list',type=str)
+  parser.add_argument('--aggregate',default=False,action='store_true',help='aggregate performance of multiple invocation of the same openmp region')
+  parser.add_argument('--nworkers_range',metavar='nworkers_range',type=str,help='range of number of workers (threads) to check against, format: min:max:step')
+  parser.add_argument('--nworkers_list',metavar='nworkers_list',type=str,help='list of number of workers (threads) to check agains, format: 2,4,32,..')
   parser.add_argument('executable',type=str,help='path and name of the executable')
-  parser.add_argument('--recipe',dest='recipe_file',type=str)
-  parser.add_argument('--force',default=False,action='store_true')
+  parser.add_argument('--recipe',dest='recipe_file',type=str,help='name of the recipe file')
+  parser.add_argument('--force',default=False,action='store_true',help='can be used if md5sum stored in recipe file does not match binary, this is not safe')
   args = parser.parse_args()
   return args
 
+# this function translates perfdata raw format to readabledata format
 def perf2readable(perfdata_parallel,readabledata_parallel,args):
   if not args.aggregate: # each parallel call is treated as unique even if it relates to the same loop
     for idx in range(len(perfdata_parallel)):
@@ -69,6 +73,7 @@ def perf2readable(perfdata_parallel,readabledata_parallel,args):
     for idx2 in range(len(readabledata_parallel)):
       readabledata_parallel[idx2].time = readabledata_parallel[idx2].time / count[idx2]       
 
+# write json file with the use of readable data
 def write_json(readabledata_parallel,nworkers,executable):
   idx=0
   fp=open(os.path.basename(executable)+'.json','w')
@@ -83,6 +88,7 @@ def write_json(readabledata_parallel,nworkers,executable):
     json_dump = {"id":id, "source":source, "performance":[{'nworkers':key,'time':value} for key,value in timing.items()]}
     json.dump(json_dump, fp, indent=2, separators=(',', ': '))
 
+# write recipe file based on readable data, this function checks how many threads should be chosen for each of parrallel regions 
 def write_recipe(readabledata_parallel,nworkers,args):
   # compute md5 sum of the executable
   md5_hash = hashlib.md5()
@@ -97,19 +103,21 @@ def write_recipe(readabledata_parallel,nworkers,args):
   frecipe.write("%s\n" % md5sum) #write md5sum
   idx=0
   rid=int(len(readabledata_parallel)/nworkers)
+  # iterate over regions
   for region in range(int(rid)):
     mintime=sys.float_info.max
     workers_recipe=1
+    # check what number of threads is best from performance perspective based on time measurements 
     for workers in range(nworkers):
       if readabledata_parallel[idx].time < mintime: 
         mintime=readabledata_parallel[idx].time
         workers_recipe=readabledata_parallel[idx].workers
         workers_idx=idx 
       idx=idx+1
-    #print(readabledata_parallel[workers_idx].codeptr)
     frecipe.write("%s %d\n" %(hex(readabledata_parallel[workers_idx].codeptr),workers_recipe))
   frecipe.close()
 
+# this function sets numbers of threads to check against based on arguments passed or sets the default
 def create_nworkers_list(args):
   nworkers_list = []
   if args.nworkers_range: # range provided
@@ -127,19 +135,22 @@ def create_nworkers_list(args):
     nworkers_list=[1,2,4,8,16,32,64,128]
   return nworkers_list
 
+# this is the driver function for performance collection
 def collect(args):
   nworkers_list = create_nworkers_list(args)
   perfdata_parallel = []
   readabledata_parallel = []
-  for nthreads in nworkers_list:
+  # iterate over number of workers
+  for nworkers in nworkers_list:
     p=Popen(args.executable)
     fifo = "./pipe"
     os.mkfifo(fifo,0o666)
     fd=os.open(fifo,os.O_WRONLY)
-    os.write(fd,pack('i',nthreads))
+    os.write(fd,pack('i',nworkers))
     os.close(fd)
     fd=os.open(fifo,os.O_RDONLY)
     rid=int.from_bytes(os.read(fd,4),byteorder="little")
+    # iterate over number of regions and read data
     for idx in range(rid):
       perfdata_binary=os.read(fd,sizeof(perfdata))
       id, workers, codeptr, begin, end = struct.unpack('iiPll',perfdata_binary)
@@ -147,12 +158,15 @@ def collect(args):
     os.close(fd)
     p.communicate()
     os.remove(fifo)
+  # sort the list, process and write json and recipe files
   perfdata_parallel.sort(key=operator.attrgetter('id'))
   perf2readable(perfdata_parallel,readabledata_parallel,args)
   write_json(readabledata_parallel,len(nworkers_list),args.executable)
   write_recipe(readabledata_parallel,len(nworkers_list),args)
 
+# this is the driver function for run mode
 def run(args):
+  # check if recipe file exists
   if not args.recipe_file:
     print("Please provide recipe file with --recipe filename option")
   else:
@@ -166,7 +180,9 @@ def run(args):
     executable.close()
     # open recipe file
     frecipe = open(args.recipe_file,"r")
-    md5sum_in_recipe=frecipe.read().splitlines()	 #readline() #read md5sum
+    # read md5sum
+    md5sum_in_recipe=frecipe.read().splitlines()	
+    # check if recipe file matches the binary 
     if str(md5sum) != str(md5sum_in_recipe[0]) and not args.force: 
       print("Executable's checksum does not match. Rerun the collection or use --force")
     else: 
@@ -175,6 +191,7 @@ def run(args):
       p=Popen(args.executable)
       fifo = "./pipe"
       os.mkfifo(fifo,0o666)
+      # send recipe file name through pipe
       fd=os.open(fifo,os.O_WRONLY)
       os.write(fd,pack('i',mode))
       fbname=bytes(args.recipe_file, 'utf-8')
@@ -185,9 +202,12 @@ def run(args):
       p.communicate()
       os.remove(fifo)
 
+# this is the main function which reads arguments and calls various modes based on user selection
 def main():
+  # parse and read arguments 
   args=parse_arguments()
   print("Oar will "+args.mode+" the program.")
+  # check in which mode to run
   if args.mode == 'collect': collect(args)
   if args.mode == 'run' : run(args)
   if args.mode == 'scan' : 
@@ -197,6 +217,7 @@ def main():
       print("OMP_NUM_THREADS is required in scanning mode but it is not set.")
       sys.exit()
     else:
+      # make sure that we run with what was set by OMP_NUM_THREADS
       args.nworkers_range=nthreads+":"+nthreads+":2"
       args.nworkers_list=nthreads
       collect(args)
